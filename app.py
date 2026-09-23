@@ -191,19 +191,10 @@ async def set_bot_commands(bot_instance: Bot):
 
 def get_schedule_data_for_day(target_day_name: str, target_date=None):
   if not os.path.exists(EXCEL_FILE):
-    return [], "❌ **Ошибка:** файл расписания не найден на сервере!"
+    return [], f"❌ **Ошибка:** файл `{EXCEL_FILE}` не найден на сервере!"
 
   try:
     df = pd.read_excel(EXCEL_FILE, sheet_name="2 курс ", header=None)
-
-    col_idx = None
-    for c in range(df.shape[1]):
-      if "14.6-515" in str(df.iloc[7, c]):
-        col_idx = c
-        break
-
-    if col_idx is None:
-      return [], "⚠️ Не удалось найти группу 14.6-515 в таблице."
 
     if target_date is None:
       target_date = get_current_msk_time().date()
@@ -229,7 +220,6 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
         current_day = str(day_val).strip()
 
       if current_day.lower().startswith(target_day_name.lower()):
-        # Собираем текст из колонки группы И из всех соседних колонок (чтобы гарантированно захватить общие лекции потока)
         row_texts = []
         for c in range(2, df.shape[1]):
           val = df.iloc[r, c]
@@ -239,7 +229,6 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
               and str(val).strip() != ""
           ):
             v_str = str(val).strip()
-            # Если это чужой семинар другой группы (например 14.6-516), пропускаем его
             if (
                 "14.6-516" in v_str
                 and "14.6-515" not in v_str
@@ -248,7 +237,6 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
               continue
             row_texts.append(v_str)
 
-        # Берем наиболее подходящий текст предмета для строки
         for subj_str in row_texts:
           if is_subject_active(subj_str, current_week):
             clean_subj = clean_subject_text(subj_str)
@@ -264,7 +252,6 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
                   "weeks_left": weeks_left,
                   "parsed_time": parse_time_str(time_str),
               }
-              # Добавляем, если на это время еще нет такой пары
               if not any(
                   l["time"] == time_str and l["subject"] == clean_subj
                   for l in lessons
@@ -308,11 +295,10 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
   if not lessons:
     quote = get_motivational_quote(0, is_weekend)
     return (
-        f"{note_text}🏖 *{target_day_name* (`{target_date.strftime('%d.%m.%Y')}`)"
+        f"{note_text}🏖 *{target_day_name}* (`{target_date.strftime('%d.%m.%Y')}`)"
         f" — пар у группы **14.6-515** нет!\n\n_{quote}_"
     )
 
-  # Сводка дня
   valid_times = [
       l["parsed_time"] for l in lessons if l["parsed_time"] is not None
   ]
@@ -339,7 +325,6 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
     )
     summary_line = f"📋 **Сводка:** учеба с **{start_str}** до **{end_str}** ({duration_str}, {windows_str})\n"
 
-  # Таймер до пары / текущая пара
   status_line = ""
   now_dt = get_current_msk_time()
   if target_date == now_dt.date():
@@ -388,7 +373,7 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
 async def cmd_start(message: Message):
   await message.answer(
       "👋 **Привет! Я бот расписания группы 14.6-515.**\n\n"
-      "Все лекции и семинары теперь подтягиваются на 100% точно!\n"
+      "Все лекции и семинары подтягиваются идеально!\n"
       "Нажми кнопку **Menu** слева от ввода или пользуйся кнопками ниже 👇",
       parse_mode="Markdown",
       reply_markup=get_main_keyboard(),
@@ -589,7 +574,7 @@ app = FastAPI()
 
 @app.get("/")
 def index():
-  return "Bot is running with bulletproof lecture parsing!"
+  return "Bot is running stably!"
 
 
 async def run_bot():
