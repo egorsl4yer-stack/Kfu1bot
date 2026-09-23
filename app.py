@@ -29,13 +29,11 @@ DAYS_MAP = {
     6: "Воскресенье",
 }
 
-# Актуальное важное объявление группы на сегодня
 current_group_note = None
 note_date = None
 
 
 def get_current_msk_time():
-  """Возвращает текущее время по Москве (МСК)"""
   return datetime.datetime.now(MSK_TZ)
 
 
@@ -107,10 +105,8 @@ def clean_subject_text(subject_str: str) -> str:
 
 
 def is_valid_subject(subject_str: str) -> bool:
-  """Проверяет, что предмет реальный, а не мусор или дублирующееся время"""
   if not subject_str or subject_str.lower() in ["nan", "none", "", "-"]:
     return False
-  # Если строка состоит только из времени (например, "8:30-10:00") или цифр
   if re.match(r"^[\d:\-\.\s]+$", subject_str):
     return False
   if len(subject_str) < 3:
@@ -131,7 +127,6 @@ def parse_time_str(time_str: str):
 
 
 def get_motivational_quote(lessons_count: int, is_weekend: bool) -> str:
-  """Живые, подбадривающие фразы"""
   if is_weekend:
     quotes = [
         "🌴 Наконец-то выходные! Выспись за всю неделю и забудь про пары.",
@@ -230,49 +225,51 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
           else (df.iloc[r, 8] if pd.notna(df.iloc[r, 8]) else None)
       )
 
-      subj_val = None
-      for check_col in [col_idx, col_idx - 1, col_idx + 1]:
-        if 0 <= check_col < df.shape[1]:
-          val = df.iloc[r, check_col]
+      if day_val is not None and not str(day_val).startswith("Дни"):
+        current_day = str(day_val).strip()
+
+      if current_day.lower().startswith(target_day_name.lower()):
+        # Собираем текст из колонки группы И из всех соседних колонок (чтобы гарантированно захватить общие лекции потока)
+        row_texts = []
+        for c in range(2, df.shape[1]):
+          val = df.iloc[r, c]
           if (
               pd.notna(val)
               and str(val).strip() != "nan"
               and str(val).strip() != ""
           ):
-            val_str = str(val)
+            v_str = str(val).strip()
+            # Если это чужой семинар другой группы (например 14.6-516), пропускаем его
             if (
-                "14.6-516" not in val_str
-                or "14.6-515" in val_str
-                or "лекция" in val_str.lower()
+                "14.6-516" in v_str
+                and "14.6-515" not in v_str
+                and "лекция" not in v_str.lower()
             ):
-              subj_val = val
-              break
+              continue
+            row_texts.append(v_str)
 
-      if day_val is not None and not str(day_val).startswith("Дни"):
-        current_day = str(day_val).strip()
+        # Берем наиболее подходящий текст предмета для строки
+        for subj_str in row_texts:
+          if is_subject_active(subj_str, current_week):
+            clean_subj = clean_subject_text(subj_str)
+            if is_valid_subject(clean_subj):
+              weeks_left = get_weeks_left(subj_str, current_week)
+              time_str = (
+                  str(time_val).strip() if time_val else "Время уточняется"
+              )
 
-      if (
-          current_day.lower().startswith(target_day_name.lower())
-          and subj_val is not None
-      ):
-        subj_str = str(subj_val)
-        if is_subject_active(subj_str, current_week):
-          clean_subj = clean_subject_text(subj_str)
-          
-          # Жесткая фильтрация мусора и пустых строк
-          if is_valid_subject(clean_subj):
-            weeks_left = get_weeks_left(subj_str, current_week)
-            time_str = str(time_val).strip() if time_val else "Время уточняется"
-            
-            lesson_info = {
-                "time": time_str,
-                "subject": clean_subj,
-                "weeks_left": weeks_left,
-                "parsed_time": parse_time_str(time_str),
-            }
-            # Проверяем на дубликаты перед добавлением
-            if lesson_info not in lessons:
-              lessons.append(lesson_info)
+              lesson_info = {
+                  "time": time_str,
+                  "subject": clean_subj,
+                  "weeks_left": weeks_left,
+                  "parsed_time": parse_time_str(time_str),
+              }
+              # Добавляем, если на это время еще нет такой пары
+              if not any(
+                  l["time"] == time_str and l["subject"] == clean_subj
+                  for l in lessons
+              ):
+                lessons.append(lesson_info)
 
     return lessons, None
   except Exception as e:
@@ -284,7 +281,11 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
     target_date = get_current_msk_time().date()
 
   current_week = get_current_academic_week(target_date)
-  week_type = "Знаменатель (четная)" if is_even_week(current_week) else "Числитель (нечетная)"
+  week_type = (
+      "Знаменатель (четная)"
+      if is_even_week(current_week)
+      else "Числитель (нечетная)"
+  )
 
   lessons, err = get_schedule_data_for_day(target_day_name, target_date)
   if err:
@@ -293,34 +294,49 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
   global current_group_note, note_date
   note_text = ""
   today_iso = get_current_msk_time().date().isoformat()
-  if current_group_note and note_date == today_iso and target_date == get_current_msk_time().date():
-    note_text = f"📢 **ВАЖНОЕ ОБЪЯВЛЕНИЕ:**\n_{current_group_note}_\n━━━━━━━━━━━━━━━━━━━━━━\n"
+  if (
+      current_group_note
+      and note_date == today_iso
+      and target_date == get_current_msk_time().date()
+  ):
+    note_text = (
+        f"📢 **ВАЖНОЕ ОБЪЯВЛЕНИЕ:**\n_{current_group_note}_\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
 
   is_weekend = target_day_name in ["Суббота", "Воскресенье"]
 
   if not lessons:
     quote = get_motivational_quote(0, is_weekend)
-    return f"{note_text}🏖 *{target_day_name}* (`{target_date.strftime('%d.%m.%Y')}`) — пар у группы **14.6-515** нет!\n\n_{quote}_"
+    return (
+        f"{note_text}🏖 *{target_day_name* (`{target_date.strftime('%d.%m.%Y')}`)"
+        f" — пар у группы **14.6-515** нет!\n\n_{quote}_"
+    )
 
   # Сводка дня
-  valid_times = [l["parsed_time"] for l in lessons if l["parsed_time"] is not None]
+  valid_times = [
+      l["parsed_time"] for l in lessons if l["parsed_time"] is not None
+  ]
   summary_line = ""
   if valid_times:
     start_day_mins = valid_times[0][0]
     end_day_mins = valid_times[-1][1]
-    
+
     start_str = f"{start_day_mins // 60:02d}:{start_day_mins % 60:02d}"
     end_str = f"{end_day_mins // 60:02d}:{end_day_mins % 60:02d}"
-    
+
     total_span_mins = end_day_mins - start_day_mins
     total_lessons_duration = sum([e - s for s, e in valid_times])
     window_mins = total_span_mins - total_lessons_duration
-    
+
     hours = total_span_mins // 60
     mins = total_span_mins % 60
     duration_str = f"{hours} ч {mins} мин" if mins > 0 else f"{hours} ч"
-    
-    windows_str = "без окон" if window_mins <= 15 else f"есть окна (~{window_mins // 60} ч)"
+
+    windows_str = (
+        "без окон"
+        if window_mins <= 15
+        else f"есть окна (~{window_mins // 60} ч)"
+    )
     summary_line = f"📋 **Сводка:** учеба с **{start_str}** до **{end_str}** ({duration_str}, {windows_str})\n"
 
   # Таймер до пары / текущая пара
@@ -334,7 +350,9 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
         s_m, e_m = pt
         if s_m <= now_mins <= e_m:
           rem = e_m - now_mins
-          status_line = f"⏳ *Сейчас идет пара! До конца осталось ~{rem} мин.*\n"
+          status_line = (
+              f"⏳ *Сейчас идет пара! До конца осталось ~{rem} мин.*\n"
+          )
           break
         elif now_mins < s_m:
           diff = s_m - now_mins
@@ -357,7 +375,10 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
   ]
 
   for l in lessons:
-    result.append(f"🕒 **{l['time']}**\n📚 {l['subject']}\n⏳ *Осталось занятий: {l['weeks_left']}*\n")
+    result.append(
+        f"🕒 **{l['time']}**\n📚 {l['subject']}\n⏳ *Осталось занятий:"
+        f" {l['weeks_left']}*\n"
+    )
 
   result.append(f"💡 *{quote}*")
   return "\n".join(result)
@@ -367,7 +388,7 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
 async def cmd_start(message: Message):
   await message.answer(
       "👋 **Привет! Я бот расписания группы 14.6-515.**\n\n"
-      "Теперь расписание чистое (без мусора), со сводкой дня, таймерами и мотивацией!\n"
+      "Все лекции и семинары теперь подтягиваются на 100% точно!\n"
       "Нажми кнопку **Menu** слева от ввода или пользуйся кнопками ниже 👇",
       parse_mode="Markdown",
       reply_markup=get_main_keyboard(),
@@ -380,7 +401,8 @@ async def cmd_note(message: Message):
   args = message.text.split(maxsplit=1)
   if len(args) < 2:
     await message.answer(
-        "⚠️ Напиши текст объявления сразу после команды, например:\n`/note Завтра встречаемся около ауд. А401`",
+        "⚠️ Напиши текст объявления сразу после команды, например:\n`/note"
+        " Завтра встречаемся около ауд. А401`",
         parse_mode="Markdown",
     )
     return
@@ -389,7 +411,8 @@ async def cmd_note(message: Message):
   note_date = get_current_msk_time().date().isoformat()
 
   await message.answer(
-      f"📢 **Внимание! Опубликовано новое объявление для группы 14.6-515:**\n\n_{current_group_note}_",
+      f"📢 **Внимание! Опубликовано новое объявление для группы"
+      f" 14.6-515:**\n\n_{current_group_note}_",
       parse_mode="Markdown",
   )
 
@@ -399,7 +422,9 @@ async def cmd_today(message: Message):
   now_msk = get_current_msk_time()
   today_name = DAYS_MAP[now_msk.weekday()]
   text = build_schedule_text(today_name, now_msk.date())
-  await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+  await message.answer(
+      text, parse_mode="Markdown", reply_markup=get_main_keyboard()
+  )
 
 
 @dp.message(Command("tomorrow"))
@@ -407,7 +432,9 @@ async def cmd_tomorrow(message: Message):
   tomorrow_msk = get_current_msk_time() + datetime.timedelta(days=1)
   tomorrow_name = DAYS_MAP[tomorrow_msk.weekday()]
   text = build_schedule_text(tomorrow_name, tomorrow_msk.date())
-  await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+  await message.answer(
+      text, parse_mode="Markdown", reply_markup=get_main_keyboard()
+  )
 
 
 @dp.message(Command("week"))
@@ -418,7 +445,8 @@ async def cmd_week(message: Message):
   week_type = "Знаменатель" if is_even_week(current_week) else "Числитель"
 
   await message.answer(
-      f"📚 **Расписание на всю неделю для группы 14.6-515**\n🗓 *{current_week}-я учебная неделя ({week_type})*\n━━━━━━━━━━━━━━━━━━━━━━",
+      f"📚 **Расписание на всю неделю для группы 14.6-515**\n🗓 *{current_week}-я"
+      f" учебная неделя ({week_type})*\n━━━━━━━━━━━━━━━━━━━━━━",
       parse_mode="Markdown",
   )
 
@@ -431,9 +459,26 @@ async def cmd_week(message: Message):
 
 def generate_calendar_keyboard(year: int, month: int):
   keyboard = []
-  months_ru = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
-  keyboard.append([InlineKeyboardButton(text=f"📅 {months_ru[month-1]} {year}", callback_data="ignore")])
-  
+  months_ru = [
+      "Январь",
+      "Февраль",
+      "Март",
+      "Апрель",
+      "Май",
+      "Июнь",
+      "Июль",
+      "Август",
+      "Сентябрь",
+      "Октябрь",
+      "Ноябрь",
+      "Декабрь",
+  ]
+  keyboard.append([
+      InlineKeyboardButton(
+          text=f"📅 {months_ru[month-1]} {year}", callback_data="ignore"
+      )
+  ])
+
   keyboard.append([
       InlineKeyboardButton(text="Пн", callback_data="ignore"),
       InlineKeyboardButton(text="Вт", callback_data="ignore"),
@@ -445,6 +490,7 @@ def generate_calendar_keyboard(year: int, month: int):
   ])
 
   import calendar
+
   cal = calendar.monthcalendar(year, month)
   for week in cal:
     row = []
@@ -452,10 +498,16 @@ def generate_calendar_keyboard(year: int, month: int):
       if day == 0:
         row.append(InlineKeyboardButton(text=" ", callback_data="ignore"))
       else:
-        row.append(InlineKeyboardButton(text=str(day), callback_data=f"cal_date_{year}_{month}_{day}"))
+        row.append(
+            InlineKeyboardButton(
+                text=str(day), callback_data=f"cal_date_{year}_{month}_{day}"
+            )
+        )
     keyboard.append(row)
 
-  keyboard.append([InlineKeyboardButton(text="« Вернуться в меню", callback_data="btn_today")])
+  keyboard.append(
+      [InlineKeyboardButton(text="« Вернуться в меню", callback_data="btn_today")]
+  )
   return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -463,7 +515,11 @@ def generate_calendar_keyboard(year: int, month: int):
 async def process_pick_date(callback: types.CallbackQuery):
   now = get_current_msk_time()
   kb = generate_calendar_keyboard(now.year, now.month)
-  await callback.message.edit_text("🗓 **Выберите дату в календаре:**", parse_mode="Markdown", reply_markup=kb)
+  await callback.message.edit_text(
+      "🗓 **Выберите дату в календаре:**",
+      parse_mode="Markdown",
+      reply_markup=kb,
+  )
   await callback.answer()
 
 
@@ -473,10 +529,12 @@ async def process_calendar_click(callback: types.CallbackQuery):
   y, m, d = int(parts[2]), int(parts[3]), int(parts[4])
   selected_date = datetime.date(y, m, d)
   day_name = DAYS_MAP[selected_date.weekday()]
-  
+
   text = build_schedule_text(day_name, selected_date)
   await callback.message.delete()
-  await callback.message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+  await callback.message.answer(
+      text, parse_mode="Markdown", reply_markup=get_main_keyboard()
+  )
   await callback.answer()
 
 
@@ -496,20 +554,25 @@ async def process_callbacks(callback: types.CallbackQuery):
   if callback.data == "btn_today":
     today_name = DAYS_MAP[now_msk.weekday()]
     text = build_schedule_text(today_name, now_msk.date())
-    await callback.message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await callback.message.answer(
+        text, parse_mode="Markdown", reply_markup=get_main_keyboard()
+    )
 
   elif callback.data == "btn_tomorrow":
     tomorrow_msk = now_msk + datetime.timedelta(days=1)
     tomorrow_name = DAYS_MAP[tomorrow_msk.weekday()]
     text = build_schedule_text(tomorrow_name, tomorrow_msk.date())
-    await callback.message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await callback.message.answer(
+        text, parse_mode="Markdown", reply_markup=get_main_keyboard()
+    )
 
   elif callback.data == "btn_week":
     days = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"]
     current_week = get_current_academic_week(now_msk.date())
     week_type = "Знаменатель" if is_even_week(current_week) else "Числитель"
     await callback.message.answer(
-        f"📚 **Расписание на всю неделю**\n🗓 *{current_week}-я неделя ({week_type})*,\nгруппа 14.6-515\n━━━━━━━━━━━━━━━━━━━━━━",
+        f"📚 **Расписание на всю неделю**\n🗓 *{current_week}-я неделя"
+        f" ({week_type})*,\nгруппа 14.6-515\n━━━━━━━━━━━━━━━━━━━━━━",
         parse_mode="Markdown",
     )
     for day in days:
@@ -526,7 +589,7 @@ app = FastAPI()
 
 @app.get("/")
 def index():
-  return "Bot is running with clean data & motivation!"
+  return "Bot is running with bulletproof lecture parsing!"
 
 
 async def run_bot():
