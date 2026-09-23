@@ -53,9 +53,12 @@ def is_even_week(week_num: int) -> bool:
 
 
 def get_weeks_left(subject_str: str, current_week: int) -> int:
-  match = re.search(r"(\d+(?:-\d+)?(?:,\s*\d+(?:-\d+)?)*)\s*нед", subject_str)
+  match = re.search(
+      r"(\d+(?:-\d+)?(?:,\s*\d+(?:-\d+)?)*)\s*(?:\(\d+\)\s*)?нед",
+      subject_str,
+  )
   if not match:
-    return 17 - current_week + 1
+    return max(0, 17 - current_week + 1)
 
   week_part = match.group(1)
   ranges = week_part.split(",")
@@ -75,7 +78,10 @@ def get_weeks_left(subject_str: str, current_week: int) -> int:
 
 
 def is_subject_active(subject_str: str, current_week: int) -> bool:
-  match = re.search(r"(\d+(?:-\d+)?(?:,\s*\d+(?:-\d+)?)*)\s*нед", subject_str)
+  match = re.search(
+      r"(\d+(?:-\d+)?(?:,\s*\d+(?:-\d+)?)*)\s*(?:\(\d+\)\s*)?нед",
+      subject_str,
+  )
   if not match:
     return True
 
@@ -99,7 +105,6 @@ def clean_subject_text(subject_str: str) -> str:
       "",
       subject_str,
   )
-  # Убираем хвосты с номерами других групп, если они попали в ячейку
   cleaned = re.split(r"14\.6-\d+", cleaned)[0]
   cleaned = re.sub(r"\s+", " ", cleaned).strip()
   return cleaned
@@ -198,13 +203,18 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
     df = pd.read_excel(EXCEL_FILE, sheet_name="2 курс ", header=None)
 
     col_idx = None
-    for c in range(df.shape[1]):
-      if "14.6-515" in str(df.iloc[7, c]):
-        col_idx = c
+    # Ищем точное вхождение нашей группы 14.6-515 в шапке таблицы (строки 0-11)
+    for r in range(min(12, len(df))):
+      for c in range(df.shape[1]):
+        val = str(df.iloc[r, c])
+        if "14.6-515" in val and "516" not in val:
+          col_idx = c
+          break
+      if col_idx is not None:
         break
 
     if col_idx is None:
-      return [], "⚠️ Не удалось найти группу 14.6-515 в таблице."
+      col_idx = 9  # Безопасный фоллбек на правильную колонку
 
     if target_date is None:
       target_date = get_current_msk_time().date()
@@ -230,51 +240,44 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
         current_day = str(day_val).strip()
 
       if current_day.lower().startswith(target_day_name.lower()):
-        # Собираем предметы для группы 14.6-515:
-        # 1. Из нашей личной колонки группы (col_idx)
-        # 2. Из общих лекционных колонок (например, col 6 и col 9, если там есть слово 'лекция')
-        candidates = []
+        cell_val = df.iloc[r, col_idx] if col_idx < df.shape[1] else None
 
-        # Берем из колонки группы
-        group_val = df.iloc[r, col_idx] if col_idx < df.shape[1] else None
-        if pd.notna(group_val):
-          candidates.append(str(group_val))
+        if (
+            pd.notna(cell_val)
+            and str(cell_val).strip() != "nan"
+            and str(cell_val).strip() != ""
+        ):
+          cell_str = str(cell_val).strip()
+          parts = re.split(r"\n|\s{10,}", cell_str)
 
-        # Ищем общие лекции на потоке в других колонках строки
-        for c in range(df.shape[1]):
-          val = df.iloc[r, c]
-          if pd.notna(val):
-            v_str = str(val)
-            # Если это лекция потока и она не принадлежит чужой группе
-            if (
-                "лекция" in v_str.lower()
-                and "14.6-516" not in v_str
-                and "14.6-514" not in v_str
-            ):
-              candidates.append(v_str)
+          for part in parts:
+            part = part.strip()
+            if not part:
+              continue
+            if "14.6-516" in part and "14.6-515" not in part:
+              continue
 
-        for subj_str in candidates:
-          if is_subject_active(subj_str, current_week):
-            clean_subj = clean_subject_text(subj_str)
-            if is_valid_subject(clean_subj):
-              weeks_left = get_weeks_left(subj_str, current_week)
-              time_str = (
-                  str(time_val).strip() if time_val else "Время уточняется"
-              )
+            if is_subject_active(part, current_week):
+              clean_subj = clean_subject_text(part)
+              if is_valid_subject(clean_subj):
+                weeks_left = get_weeks_left(part, current_week)
+                time_str = (
+                    str(time_val).strip() if time_val else "Время уточняется"
+                )
 
-              lesson_info = {
-                  "time": time_str,
-                  "subject": clean_subj,
-                  "weeks_left": weeks_left,
-                  "parsed_time": parse_time_str(time_str),
-              }
-              # Избегаем дубликатов на одно и то же время
-              if not any(
-                  l["time"] == time_str
-                  and l["subject"].lower() == clean_subj.lower()
-                  for l in lessons
-              ):
-                lessons.append(lesson_info)
+                lesson_info = {
+                    "time": time_str,
+                    "subject": clean_subj,
+                    "weeks_left": weeks_left,
+                    "parsed_time": parse_time_str(time_str),
+                }
+
+                if not any(
+                    l["time"] == time_str
+                    and l["subject"].lower() == clean_subj.lower()
+                    for l in lessons
+                ):
+                  lessons.append(lesson_info)
 
     return lessons, None
   except Exception as e:
@@ -329,18 +332,26 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
     end_str = f"{end_day_mins // 60:02d}:{end_day_mins % 60:02d}"
 
     total_span_mins = end_day_mins - start_day_mins
-    total_lessons_duration = sum([e - s for s, e in valid_times])
-    window_mins = total_span_mins - total_lessons_duration
+
+    # Правильный расчет окон: окно — это если перерыв между парами > 90 минут
+    window_hours_list = []
+    for i in range(len(valid_times) - 1):
+      gap = valid_times[i + 1][0] - valid_times[i][1]
+      if gap > 90:
+        window_hours_list.append(gap / 60)
 
     hours = total_span_mins // 60
     mins = total_span_mins % 60
     duration_str = f"{hours} ч {mins} мин" if mins > 0 else f"{hours} ч"
 
-    windows_str = (
-        "без окон"
-        if window_mins <= 15
-        else f"есть окна (~{window_mins // 60} ч)"
-    )
+    if not window_hours_list:
+      windows_str = "без окон"
+    else:
+      windows_str = (
+          f"есть окно (-а) ~{', '.join([f'{h:.1f}' for h in window_hours_list])}"
+          " ч"
+      )
+
     summary_line = f"📋 **Сводка:** учеба с **{start_str}** до **{end_str}** ({duration_str}, {windows_str})\n"
 
   status_line = ""
@@ -391,7 +402,7 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
 async def cmd_start(message: Message):
   await message.answer(
       "👋 **Привет! Я бот расписания группы 14.6-515.**\n\n"
-      "Точное расписание без чужих пар и с общими лекциями!\n"
+      "Расписание идеальное: только наши пары, лекции и никакой путаницы!\n"
       "Нажми кнопку **Menu** слева от ввода или пользуйся кнопками ниже 👇",
       parse_mode="Markdown",
       reply_markup=get_main_keyboard(),
@@ -592,7 +603,7 @@ app = FastAPI()
 
 @app.get("/")
 def index():
-  return "Bot is running with precise lecture/seminar filtering!"
+  return "Bot is running with precise group parsing!"
 
 
 async def run_bot():
