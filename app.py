@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import os
+import random
 import re
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -39,7 +40,6 @@ def get_current_msk_time():
 
 
 def get_current_academic_week(target_date=None) -> int:
-  """Расчет учебной недели (1 сентября 2026 — вторник, неделя начинается с понедельника 31 августа)"""
   if target_date is None:
     target_date = get_current_msk_time().date()
 
@@ -51,7 +51,6 @@ def get_current_academic_week(target_date=None) -> int:
 
 
 def is_even_week(week_num: int) -> bool:
-  """Четная неделя (Знаменатель) или нечетная (Числитель)"""
   return week_num % 2 == 0
 
 
@@ -107,8 +106,19 @@ def clean_subject_text(subject_str: str) -> str:
   return cleaned
 
 
+def is_valid_subject(subject_str: str) -> bool:
+  """Проверяет, что предмет реальный, а не мусор или дублирующееся время"""
+  if not subject_str or subject_str.lower() in ["nan", "none", "", "-"]:
+    return False
+  # Если строка состоит только из времени (например, "8:30-10:00") или цифр
+  if re.match(r"^[\d:\-\.\s]+$", subject_str):
+    return False
+  if len(subject_str) < 3:
+    return False
+  return True
+
+
 def parse_time_str(time_str: str):
-  """Конвертирует '10:10-11:40' в минуты от начала дня для расчетов"""
   try:
     parts = time_str.replace(" ", "").split("-")
     if len(parts) != 2:
@@ -118,6 +128,40 @@ def parse_time_str(time_str: str):
     return (start_h * 60 + start_m, end_h * 60 + end_m)
   except:
     return None
+
+
+def get_motivational_quote(lessons_count: int, is_weekend: bool) -> str:
+  """Живые, подбадривающие фразы"""
+  if is_weekend:
+    quotes = [
+        "🌴 Наконец-то выходные! Выспись за всю неделю и забудь про пары.",
+        "☕️ Отдыхай, набирайся сил. Понедельник придет быстрее, чем хотелось бы!",
+        "🎉 Никаких пар! Самое время погулять или поиграть в любимые игры.",
+    ]
+  elif lessons_count == 0:
+    quotes = [
+        "🍀 Халява! Сегодня пар нет, отличный день для отдыха.",
+        "🧘 День без пар — повод заняться своими делами или закрыть долги.",
+    ]
+  elif lessons_count <= 2:
+    quotes = [
+        "⚡️ Легкий день! Всего пара пар, пролетит незаметно.",
+        "🚀 Быстрый забег: отучился и свободен!",
+        "😎 На релаксе: сегодня пар совсем немного.",
+    ]
+  elif lessons_count >= 4:
+    quotes = [
+        "🔥 Настоящий марафон! Держись, ты справишься с этим днем.",
+        "☕️ Запасись кофе — день будет долгим, но ты сильнее!",
+        "💪 Тяжело в учебе — зато потом легче. Жми до победного!",
+    ]
+  else:
+    quotes = [
+        "🎯 Отличный рабочий ритм. Продуктивного дня!",
+        "⭐️ Хороший баланс пар. Сделай этот день крутым!",
+        "🧠 Включаем режим продуктивности — всё получится!",
+    ]
+  return random.choice(quotes)
 
 
 def get_main_keyboard():
@@ -151,7 +195,6 @@ async def set_bot_commands(bot_instance: Bot):
 
 
 def get_schedule_data_for_day(target_day_name: str, target_date=None):
-  """Возвращает список словарей с парами и сырые данные для аналитики дня"""
   if not os.path.exists(EXCEL_FILE):
     return [], "❌ **Ошибка:** файл расписания не найден на сервере!"
 
@@ -211,21 +254,23 @@ def get_schedule_data_for_day(target_day_name: str, target_date=None):
       if (
           current_day.lower().startswith(target_day_name.lower())
           and subj_val is not None
-          and str(subj_val).strip() != "nan"
-          and str(subj_val).strip() != ""
       ):
         subj_str = str(subj_val)
         if is_subject_active(subj_str, current_week):
           clean_subj = clean_subject_text(subj_str)
-          weeks_left = get_weeks_left(subj_str, current_week)
-          time_str = str(time_val).strip() if time_val else "Время уточняется"
-          if clean_subj:
+          
+          # Жесткая фильтрация мусора и пустых строк
+          if is_valid_subject(clean_subj):
+            weeks_left = get_weeks_left(subj_str, current_week)
+            time_str = str(time_val).strip() if time_val else "Время уточняется"
+            
             lesson_info = {
                 "time": time_str,
                 "subject": clean_subj,
                 "weeks_left": weeks_left,
                 "parsed_time": parse_time_str(time_str),
             }
+            # Проверяем на дубликаты перед добавлением
             if lesson_info not in lessons:
               lessons.append(lesson_info)
 
@@ -251,10 +296,13 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
   if current_group_note and note_date == today_iso and target_date == get_current_msk_time().date():
     note_text = f"📢 **ВАЖНОЕ ОБЪЯВЛЕНИЕ:**\n_{current_group_note}_\n━━━━━━━━━━━━━━━━━━━━━━\n"
 
-  if not lessons:
-    return f"{note_text}🏖 *{target_day_name}* (`{target_date.strftime('%d.%m.%Y')}`) — пар у группы **14.6-515** нет (выходной)!"
+  is_weekend = target_day_name in ["Суббота", "Воскресенье"]
 
-  # Генерация краткой сводки дня
+  if not lessons:
+    quote = get_motivational_quote(0, is_weekend)
+    return f"{note_text}🏖 *{target_day_name}* (`{target_date.strftime('%d.%m.%Y')}`) — пар у группы **14.6-515** нет!\n\n_{quote}_"
+
+  # Сводка дня
   valid_times = [l["parsed_time"] for l in lessons if l["parsed_time"] is not None]
   summary_line = ""
   if valid_times:
@@ -275,12 +323,11 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
     windows_str = "без окон" if window_mins <= 15 else f"есть окна (~{window_mins // 60} ч)"
     summary_line = f"📋 **Сводка:** учеба с **{start_str}** до **{end_str}** ({duration_str}, {windows_str})\n"
 
-  # Проверка статуса (идёт пара сейчас или сколько осталось)
+  # Таймер до пары / текущая пара
   status_line = ""
   now_dt = get_current_msk_time()
   if target_date == now_dt.date():
     now_mins = now_dt.hour * 60 + now_dt.minute
-    current_lesson_found = False
     for l in lessons:
       pt = l["parsed_time"]
       if pt:
@@ -288,7 +335,6 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
         if s_m <= now_mins <= e_m:
           rem = e_m - now_mins
           status_line = f"⏳ *Сейчас идет пара! До конца осталось ~{rem} мин.*\n"
-          current_lesson_found = True
           break
         elif now_mins < s_m:
           diff = s_m - now_mins
@@ -297,6 +343,8 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
           time_to = f"{h} ч {m} мин" if h > 0 else f"{m} мин"
           status_line = f"⏳ *До первой/следующей пары осталось {time_to}*\n"
           break
+
+  quote = get_motivational_quote(len(lessons), is_weekend)
 
   result = [
       f"{note_text}"
@@ -311,6 +359,7 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
   for l in lessons:
     result.append(f"🕒 **{l['time']}**\n📚 {l['subject']}\n⏳ *Осталось занятий: {l['weeks_left']}*\n")
 
+  result.append(f"💡 *{quote}*")
   return "\n".join(result)
 
 
@@ -318,7 +367,7 @@ def build_schedule_text(target_day_name: str, target_date=None) -> str:
 async def cmd_start(message: Message):
   await message.answer(
       "👋 **Привет! Я бот расписания группы 14.6-515.**\n\n"
-      "Теперь я умею показывать сводку дня, таймеры до пар и календарь на любой день!\n"
+      "Теперь расписание чистое (без мусора), со сводкой дня, таймерами и мотивацией!\n"
       "Нажми кнопку **Menu** слева от ввода или пользуйся кнопками ниже 👇",
       parse_mode="Markdown",
       reply_markup=get_main_keyboard(),
@@ -380,15 +429,11 @@ async def cmd_week(message: Message):
     await asyncio.sleep(0.3)
 
 
-# --- Календарь выбора даты ---
 def generate_calendar_keyboard(year: int, month: int):
   keyboard = []
-  
-  # Заголовок месяца и года (русские названия)
   months_ru = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
   keyboard.append([InlineKeyboardButton(text=f"📅 {months_ru[month-1]} {year}", callback_data="ignore")])
   
-  # Дни недели
   keyboard.append([
       InlineKeyboardButton(text="Пн", callback_data="ignore"),
       InlineKeyboardButton(text="Вт", callback_data="ignore"),
@@ -481,7 +526,7 @@ app = FastAPI()
 
 @app.get("/")
 def index():
-  return "Bot is running with full calendar & summary features!"
+  return "Bot is running with clean data & motivation!"
 
 
 async def run_bot():
